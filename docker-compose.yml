@@ -1,0 +1,86 @@
+version: '2'
+
+volumes:
+    db: ~
+    composer: ~
+
+networks:
+    default:
+        ipam:
+            config:
+                - subnet: 172.31.200.0/24
+                  gateway: 172.31.200.1
+
+services:
+    dnsdock:
+        image: aacebedo/dnsdock:v1.16.1-amd64
+        command: --domain tld
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock
+        ports:
+            - 172.31.200.1:53:53/udp
+
+    php:
+        image: benvent/php-fpm-symfony
+        depends_on:
+            - db
+        volumes:
+            - composer:/var/www/.composer
+            - /app/var/cache
+            - /app/var/logs
+            - .:/app
+        environment:
+            DATABASE_HOST: db.domain.tld
+            MAILER_HOST: mailcatcher.domain.tld
+
+    nginx:
+        image: nginx:1.11.12-alpine
+        depends_on:
+            - php
+        environment:
+            NGINX_PORT: 8080
+            PHP_HOST: php
+        command: /bin/sh -c "envsubst '$$NGINX_PORT $$PHP_HOST' < /etc/nginx/conf.d/default.template > /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"
+        volumes:
+            - ./nginx/conf.d/default.template:/etc/nginx/conf.d/default.template:ro
+            - ./web:/app/web:ro
+
+    varnish:
+        image: benvent/varnish
+        environment:
+            BACKEND_HOST: nginx
+            BACKEND_PORT: 8080
+            BAN_HOST: php
+        depends_on:
+            - nginx
+        networks:
+            default:
+                aliases:
+                    - www.domain.tld
+        labels:
+            com.dnsdock.alias: www.domain.tld
+
+    db:
+        image: percona:5.6
+        environment:
+            MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+            MYSQL_USER: user
+            MYSQL_PASSWORD: password
+            MYSQL_DATABASE: database
+        volumes:
+            - db:/var/lib/mysql:rw
+        networks:
+            default:
+                aliases:
+                    - db.domain.tld
+        labels:
+            com.dnsdock.alias: db.domain.tld
+
+    mailcatcher:
+        image: tophfr/mailcatcher:0.6.5
+        networks:
+            default:
+                aliases:
+                    - mailcatcher.domain.tld
+        labels:
+            com.dnsdock.alias: mailcatcher.domain.tld
